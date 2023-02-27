@@ -1,4 +1,10 @@
 #include "systemcalls.h"
+#include <string.h>
+#include <syslog.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 
 /**
  * @param cmd the command to execute with system()
@@ -17,6 +23,17 @@ bool do_system(const char *cmd)
  *   or false() if it returned a failure
 */
 
+    int sys;
+    sys = system(cmd);
+    if(sys == -1)
+    {
+        perror("\nError:");
+        return false;
+    }
+    else{
+        printf("\nsecceeded\n");
+        return true;
+    }
     return true;
 }
 
@@ -38,6 +55,7 @@ bool do_exec(int count, ...)
 {
     va_list args;
     va_start(args, count);
+    int status;
     char * command[count+1];
     int i;
     for(i=0; i<count; i++)
@@ -58,6 +76,36 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
+    for(i=0; i<count; i++)
+    {
+        if(command[i][0] != '/')
+        {
+           if(command[i][0] != '-')
+                return false;     
+        }
+    }
+    pid_t pid;
+    pid = fork();
+    if(pid == -1)
+    {
+        perror("\ncannot create the fork\n");
+        return false;
+    }
+    else if(pid == 0)
+    {
+        execv(command[0], command);
+        exit(-1);
+    }
+    if (wait(&status) == -1)
+    {
+        printf("\nwaiting\n");
+        return false;
+    }
+    else if(WIFEXITED(status))
+    {
+        printf("\nReturned with status: %d\n", WEXITSTATUS(status));
+        return true;
+    }
 
     va_end(args);
 
@@ -93,7 +141,59 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *
 */
 
-    va_end(args);
+    int status;
+    pid_t pid;
+    int rt;
 
+    //Opening the file where STDOUT needs to be redirected
+    int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0644);
+    if(fd < 0){
+        perror("open error");
+        return false;
+    }
+
+    //Create a child process
+    pid = fork();
+
+    //Fork fail condition
+    if(pid == -1){
+        perror("fork error");
+        return false;
+    }else if(pid == 0){ //Child process
+
+        if(dup2(fd,1) < 0){
+            perror("dup2 error");
+            return false;
+        }
+        close(fd);
+
+        //execute child process
+        rt = execv(command[0],command);
+        if(rt == -1){
+            perror("execv error");
+            exit(-1);
+        }
+    }
+    else{//Parent process
+
+        close(fd);
+
+        //wait for child process exit
+        if(waitpid(pid,&status,0) == -1){
+            perror("wait error");
+            return false;
+        }
+        
+        //check exit status after wait
+        if( ! (WIFEXITED(status)) || WEXITSTATUS(status)){
+            perror("wait error");
+            return false;
+        }
+
+    }
+
+
+    va_end(args);
+    
     return true;
 }
