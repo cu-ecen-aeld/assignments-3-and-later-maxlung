@@ -1,5 +1,5 @@
 #!/bin/sh
-
+# Author: Siddhant Jajoo
 set -e
 set -u
 
@@ -39,16 +39,19 @@ else
 	exit 1
 fi
 
-echo "Removing the old writer utility and compiling as a native application"
-make clean
-make
+#echo "Removing the old writer utility and compiling as a native application"
+#make clean
+#make
 
 for i in $( seq 1 $NUMFILES)
 do
 	./writer "$WRITEDIR/${username}$i.txt" "$WRITESTR"
 done
 
-OUTPUTSTRING=$(./finder.sh "$WRITEDIR" "$WRITESTR")
+echo "Running finder with args: ${WRITEDIR} ${WRITESTR}"
+OUTPUTSTRING=$( sh $(dirname $0)/finder.sh "$WRITEDIR" "$WRITESTR")
+
+
 
 set +e
 echo ${OUTPUTSTRING} | grep "${MATCHSTR}"
