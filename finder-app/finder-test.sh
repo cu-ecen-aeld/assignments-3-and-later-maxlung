@@ -39,20 +39,32 @@ else
 	exit 1
 fi
 
+#Check for path validity
+if [ -z $(which writer) ]
+then 
+	echo Empty path!
+	exit 1
+fi
+
+
+if [ -z $(which finder.sh) ]
+then 
+	echo Empty path!
+	exit 1
+fi
 #echo "Removing the old writer utility and compiling as a native application"
 #make clean
 #make
 
 for i in $( seq 1 $NUMFILES)
 do
-	./writer "$WRITEDIR/${username}$i.txt" "$WRITESTR"
+	writer "$WRITEDIR/${username}$i.txt" "$WRITESTR"
 done
 
-echo "Running finder with args: ${WRITEDIR} ${WRITESTR}"
-OUTPUTSTRING=$( sh $(dirname $0)/finder.sh "$WRITEDIR" "$WRITESTR")
+OUTPUTSTRING=$(finder.sh "$WRITEDIR" "$WRITESTR")
 
-
-
+#Aassignment-4
+echo ${OUTPUTSTRING} > /tmp/assignment-4-result.txt
 set +e
 echo ${OUTPUTSTRING} | grep "${MATCHSTR}"
 if [ $? -eq 0 ]; then
