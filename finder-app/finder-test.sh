@@ -1,5 +1,3 @@
-#!/bin/sh
-# Author: Siddhant Jajoo
 set -e
 set -u
 
@@ -39,19 +37,6 @@ else
 	exit 1
 fi
 
-#Check for path validity
-if [ -z $(which writer) ]
-then 
-	echo Empty path!
-	exit 1
-fi
-
-
-if [ -z $(which finder.sh) ]
-then 
-	echo Empty path!
-	exit 1
-fi
 #echo "Removing the old writer utility and compiling as a native application"
 #make clean
 #make
@@ -63,8 +48,8 @@ done
 
 OUTPUTSTRING=$(finder.sh "$WRITEDIR" "$WRITESTR")
 
-#Aassignment-4
-echo ${OUTPUTSTRING} > /tmp/assignment-4-result.txt
+writer /tmp/assignment-4-result.txt "${OUTPUTSTRING}"
+
 set +e
 echo ${OUTPUTSTRING} | grep "${MATCHSTR}"
 if [ $? -eq 0 ]; then
