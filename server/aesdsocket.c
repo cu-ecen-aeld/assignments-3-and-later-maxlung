@@ -1,288 +1,145 @@
 #include <stdio.h>
-#include <netdb.h>
-#include <netinet/in.h>
 #include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
 #include <unistd.h>
-#include <arpa/inet.h>
+#include <errno.h>
+#include <string.h>
 #include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <sys/wait.h>
 #include <signal.h>
 #include <syslog.h>
-#include <errno.h>
-#include <stdbool.h>
+
+#define PORT "9000"  // the port users will be connecting to
+
+#define BUFSIZE 2000
+
+#define BACKLOG 10   // how many pending connections queue will hold
+
+const char *OUTPUT = "/var/tmp/aesdsocketdata";
+
+int sock_fd= 0;
+int new_fd = 0;
+ssize_t count = 0;
+struct addrinfo *servinfo = NULL;
+FILE *f_out = NULL;	 // open output file
+FILE *client_socket_fh = NULL; // open socket for buffered reading
 
 
-#define PORT "9000"
-#define FILE "/var/tmp/aesdsocketdata"
-#define BUF_SIZE 1000
-#define MAX_CONNECTIONS 8
-
-/*global variables*/
-static int sockfd = -1;
-static int connfd = -1;
-static struct addrinfo  *servaddr;
-
-/*clean up the resources*/
-void cleanup()
+void sigchld_handler(int s)
 {
-   if(sockfd > -1)
-   {
-      shutdown(sockfd, SHUT_RDWR);
-      close(sockfd);
-   }
-
-   if(connfd > -1)
-   {
-      shutdown(connfd, SHUT_RDWR);
-      close(connfd);
-   }
-
-   if(servaddr != NULL)
-       freeaddrinfo(servaddr);
-   
-   remove(FILE);
-
-   closelog();
+	syslog(LOG_INFO, "%s\n", "Caught signal, exiting");
+	if (client_socket_fh)
+		fclose(client_socket_fh);
+	if (new_fd)
+		close(new_fd);
+	if (f_out)
+		fclose(f_out);
+	if (sock_fd)
+		close(sock_fd);
+	if (servinfo)
+		freeaddrinfo(servinfo);
+	remove(OUTPUT);
+	exit(0);
 }
 
-/*signals*/
-static void sig_handler(int sig)
+int main(int argc, char *argv[])
 {
-    syslog(LOG_INFO, "Signal Caught %d\n\r", sig);
-    
-    if(sig == SIGINT)
-    {
-       cleanup();
-    }
-    else if(sig == SIGTERM)
-    {
-       cleanup();
-    }
-    
-    exit(0);
-}
+    //int sockfd, new_fd;  // listen on sock_fd, new connection on new_fd
+    int status;
+    struct addrinfo hints;
+    struct sockaddr their_addr; // connector's address information
+    socklen_t sin_size;
+    struct sigaction sa = {0};
+    const int yes=1;
+    char buf[BUFSIZE];
+    char *input = NULL;
+    size_t len = 0;
+    size_t size;
 
 
-int main(int argc, char **argv) 
-{
-   openlog("aesdsocket", 0, LOG_USER);
-   
-   
-   sig_t retVal = signal(SIGINT, sig_handler);
-    
-   if (retVal == SIG_ERR) 
-   {
-       syslog(LOG_ERR, "could not register SIGINT, error SIG_ERR\n\r");
-       cleanup();
-   }
 
-   retVal = signal(SIGTERM, sig_handler);
-   if (retVal == SIG_ERR) 
-   {
-       syslog(LOG_ERR, "could not register SIGTERM, error SIG_ERR\n\r");
-       cleanup();
-   }
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
 
-   bool createdaemon = false;
-    
-   /*check and createdaemon*/
-   if (argc == 2) 
-   {
-      if (!strcmp(argv[1], "-d")) 
-      {
-         createdaemon = true;
-      } 
-      else 
-      {
-         printf("wrong arg: %s\nUse -d option for daemon", argv[1]);
-         syslog(LOG_ERR, "wrong arg: %s\nUse -d option for createdaemon", argv[1]);
-         return (-1);
-      }
-   }
+    sa.sa_handler = sigchld_handler; 
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+	sigaction(SIGTERM, &sa, NULL);
 
-    struct addrinfo addr_hints;
 
-    memset(&addr_hints, 0, sizeof(addr_hints));
+    getaddrinfo("0.0.0.0", PORT, &hints, &servinfo);
 
-    /*initialise server address*/
-    addr_hints.ai_family = AF_INET;
-    addr_hints.ai_socktype = SOCK_STREAM;
-    addr_hints.ai_flags = AI_PASSIVE;
-    int result = getaddrinfo(NULL, (PORT), &addr_hints, &servaddr);
-    if (result != 0) 
-    {
-       syslog(LOG_ERR, "getaddrinfo() error %s\n", gai_strerror(result));
-       cleanup();
-       return -1;
+    if ((sock_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
+		return (-1);
+
+
+    setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+	if ((status = bind(sock_fd, servinfo->ai_addr, servinfo->ai_addrlen)) != 0)
+		return (-1);
+
+
+	if (argc == 2 && strcmp(argv[1], "-d") == 0 && fork()) {
+		exit(0);
+	}
+    if (listen(sock_fd, BACKLOG) == -1) {
+        perror("listen");
+        exit(1);
     }
 
-    /*create socket connection*/
-    sockfd = socket(servaddr->ai_family, SOCK_STREAM, 0);
-    if (sockfd < 0) 
-    {
-       syslog(LOG_ERR, "socket creation failed, error number %d\n", errno);
-       cleanup();
-       return -1;
+
+    printf("server: waiting for connections...\n");
+
+    while(1) {  // main accept() loop
+        sin_size = sizeof their_addr;
+        new_fd = accept(sock_fd, (struct sockaddr *)&their_addr, &sin_size);
+        if (new_fd == -1) {
+            perror("accept");
+            continue;
+        }
+
+        struct sockaddr_in *client_addr = (struct sockaddr_in *)&their_addr;
+        syslog(LOG_INFO, "Accepted connection from %s\n", inet_ntoa(client_addr->sin_addr));
+
+
+		client_socket_fh = fdopen(new_fd, "rb");
+
+        if(client_socket_fh)
+        {
+            input = NULL;
+			len = 0;
+            if ((count = getline(&input, &len, client_socket_fh)) != -1)
+			{
+				f_out = fopen(OUTPUT, "a+");
+
+				fputs(input, f_out);
+				fflush(f_out);
+				free(input);	
+                   
+				size = 0;
+
+				fseek(f_out, 0, SEEK_SET);
+				while ((size = fread(buf, sizeof(char), BUFSIZE, f_out)) > 0)
+					send(new_fd, buf, size, 0);
+				fclose(f_out);
+				f_out = NULL;
+					
+
+				fclose(client_socket_fh);
+				client_socket_fh = NULL;
+				close(new_fd);
+				new_fd = 0;
+				syslog(LOG_INFO, "Closed connection from %s\n", inet_ntoa(client_addr->sin_addr));
+				
+            }
+        }
     }
-
-   // Set sockopts for reuse of server socket
-    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) < 0) 
-    {
-       syslog(LOG_ERR, "set socket options failed with error number%d\n", errno);
-       cleanup();
-       return -1;
-    }
-
-    // Bind device address to socket
-    if (bind(sockfd, servaddr->ai_addr, servaddr->ai_addrlen) < 0) 
-    {
-       syslog(LOG_ERR, "binding socket error num %d\n", errno);
-       cleanup();
-       return -1;
-    }
-
-    // Listen for connection
-    if (listen(sockfd, MAX_CONNECTIONS)) 
-    {
-       syslog(LOG_ERR, "listening for connection error num %d\n", errno);
-       cleanup();
-       return -1;
-    }
-
-    printf("Listening for connections\n\r");
-
-    if (createdaemon == true) 
-    {
-       int retVal = daemon(0,0);
-       
-       if(-1 == retVal)
-       {
-          syslog(LOG_ERR, "failed to create daemon\n");
-          cleanup();
-          return -1;
-       }
-    }
-
-    while(1) 
-    {
-       struct sockaddr_in cli_addr;
-       socklen_t cli_addr_size = sizeof(cli_addr);
-
-       connfd = accept(sockfd, (struct sockaddr*)&cli_addr, &cli_addr_size);
-        
-       if(connfd < 0)
-       {
-          syslog(LOG_ERR, "accepting new connection error is %s", strerror(errno));
-          cleanup();
-          return -1;
-       } 
-       
-       char *client_ip = inet_ntoa(cli_addr.sin_addr);
-
-       
-       syslog(LOG_INFO, "Accepted connection from %s \n\r",client_ip);
-       printf("Accepted connection from %s\n\r", client_ip);
-
-       char buf[BUF_SIZE];
-
-       /*read the data and write into /var/tmp/aesdsocketdata file*/
-       while(1)
-       {
-          int noOfBytesRead = read(connfd, buf, (BUF_SIZE));
-            
-          if (noOfBytesRead < 0) 
-          {
-             syslog(LOG_ERR, "Error: reading from socket errno=%d\n", errno);
-             continue; 
-          }
-           
-          
-          if (noOfBytesRead == 0)
-              continue;
-
-          printf("read %d bytes\n\r", noOfBytesRead);
-          
-          //open the file for writing
-          int fd = open(FILE,O_RDWR | O_CREAT | O_APPEND, 0766);
-
-          if (fd < 0)
-             syslog(LOG_ERR, "error opening file errno is %d\n\r", errno);
-
-          int noOfBytesWritten = write(fd, buf, noOfBytesRead);
-
-          if(noOfBytesWritten < 0)
-          {
-             syslog(LOG_ERR, "Error writing to file errno is %d\n\r", errno);
-             close(fd);
-             continue;
-          }
-
-          close(fd);
-          printf("wrote %d bytes\n\r", noOfBytesWritten);
-
-          if (strchr(buf, '\n')) 
-          {  //check if we have recieved a newline, if so break
-             // from writing into file and go ahead and send packets
-             // to client
-             break;
-          } 
-
-       }
-
-       int read_offset = 0;
-
-       /*read the data from /var/tmp/aesdsocketdata file and send to the client*/
-       while(1) 
-       {
-          int fd = open(FILE, O_RDWR | O_CREAT | O_APPEND, 0766);
-            
-          if(fd < 0)
-          {
-             syslog(LOG_ERR, "file open error with errno=%d\n", errno);
-             printf("error is %d\n\r", errno);
-             continue; 
-          }
-
-          /*update file offset*/
-          lseek(fd, read_offset, SEEK_SET);
-          int noOfBytesRead = read(fd, buf, (BUF_SIZE));
-            
-          close(fd);
-          if(noOfBytesRead < 0)
-          {
-             syslog(LOG_ERR, "Error reading from file errno %d\n", errno);
-             continue;
-          }
-
-          if(noOfBytesRead == 0)
-             break;
-
-          int noOfBytesWritten = write(connfd, buf, noOfBytesRead);
-          printf("wrote %d bytes to client\n\r", noOfBytesWritten);
-
-          if(noOfBytesWritten < 0)
-          {
-             printf("errno is %d", errno);
-
-             syslog(LOG_ERR, "Error writing to client fd %d\n", errno);
-             continue;
-          }
-            
-          read_offset += noOfBytesWritten;
-       }
-
-       close(connfd);
-        
-       connfd = -1;
-       syslog(LOG_INFO, "closing client socket\n\r");
-    } 
-
-    cleanup();
 
     return 0;
-
 }

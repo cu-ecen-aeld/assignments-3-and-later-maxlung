@@ -1,14 +1,15 @@
-CC=$(CROSS_COMPILE)gcc
-CFLAGS=-Werror -Wall -g
+ifdef CROSS_COMPILE
+CC = $(CROSS_COMPILE)gcc -g -Wall -Werror
+else
+CC = gcc -g -Wall -Werror
+endif
 
-all: aesdsocket
-default: aesdsocket
+all: aesdsocket.c
+	$(CC) aesdsocket.c -o aesdsocket
 
-aesdsocket: aesdsocket.o
-	$(CC) -o aesdsocket aesdsocket.o	
+default: aesdsocket.c
+	$(CC) aesdsocket.c -o aesdsocket	
 
-appl=aesdsocket
-
-.PHONY : clean
-clean :
-	rm -f $(appl) *.o
+.PHONY: clean
+clean:
+	rm -f aesdsocket
